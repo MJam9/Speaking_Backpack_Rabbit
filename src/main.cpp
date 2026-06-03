@@ -5,6 +5,10 @@
 #include <IRremoteESP8266.h>
 #include <IRutils.h>
 #include <esp_sleep.h>
+#include "driver/gpio.h"
+
+// Enable IR debugging
+#define DEBUG 1
 
 // Servo-Objekt
 Servo servoRechts;
@@ -17,13 +21,10 @@ DFRobotDFPlayerMini myDFPlayer;
 const int servorechtsPin = 27;  // Signal-Pin für das Servo (GPIO 18 alt)
 const int servolinksPin = 26;  // Signal-Pin für das Servo (GPIO 19 alt)
 
-//const uint16_t kRecvPin = 27;  // Dein Signalpin
-//IRrecv irrecv(kRecvPin);
-//decode_results results;
-
-// Zeitsteuerung
-unsigned long interval = 10 * 1000; // 10 Sekunden in ms
-unsigned long lastActionTime = 0;
+// IR Remote
+const uint16_t kRecvPin = 4;  // Dein Signalpin
+IRrecv irrecv(kRecvPin);
+decode_results results;
 
 // Bewegungs-Definitionen
 struct Bewegung {
@@ -72,7 +73,7 @@ void spieleZufallsTrack() {
   Serial.print("Spiele Track Nummer: ");
   Serial.println(trackNumber);
   myDFPlayer.play(trackNumber);
-
+/*
   // Wait until the track is finished (or up to 10 seconds max)
   unsigned long waitStart = millis();
   while (millis() - waitStart < 10000UL) {
@@ -85,7 +86,7 @@ void spieleZufallsTrack() {
       myDFPlayer.read();
     }
     delay(20);
-  }
+  }*/
 }
 
 void bewegeServosZufaellig() {
@@ -119,7 +120,6 @@ void servoAn() {
   servoLinks.attach(servolinksPin);
 }
 
-
 void setup() {
   Serial.begin(115200);
   randomSeed(analogRead(0)); // Initialisiert den Zufallsgenerator
@@ -138,47 +138,44 @@ void setup() {
   servoRechts.attach(servorechtsPin);
   servoLinks.attach(servolinksPin);
 
-  lastActionTime = millis();
+  // IR Remote starten
+  pinMode(kRecvPin, INPUT);  // Explicitly set GPIO 4 as input
+  irrecv.enableIRIn();  // Start the receiver
+  Serial.println("IR receiver enabled on GPIO 4.");
+  Serial.printf("GPIO 4 initialized, current state: %d\n", digitalRead(kRecvPin));
+  Serial.println("Waiting for IR button presses (Sleep Mode Disabled)...");
+
+  delay(500);
 }
 
 void loop() {
-  if (millis() - lastActionTime >= interval) {
-    unsigned long cycleStart = millis();
-    lastActionTime = cycleStart;
+  if (irrecv.decode(&results)) {
+    unsigned long irValue = results.value;
 
-    // Zufallsmodus: 0 = Sprechen, 1 = Bewegen, 2 = Beides
-    int mode = random(0, 3);
-    // mode = 2;  // Zum Testen gezielt nur "beides"
+    // Ignoriere den NEC-Repeat Code (0xFFFFFFFF) und ungültige Signale
+    if (irValue == 0 || irValue == 0xFFFFFFFF) {
+      irrecv.resume();
+      return;
+    }
 
-    Serial.print("Modus gewählt: ");
-    Serial.println(mode);
+    Serial.print("IR Code empfangen: 0x");
+    Serial.println(irValue, HEX);
 
-    if (mode == 0 || mode == 2) {
+    if (irValue == 0xFF30CF) { // Taste 1
+      Serial.println("Aktion: Nur Sprechen");
       spieleZufallsTrack();
     }
-
-    if (mode == 1 || mode == 2) {
-      //servoAn();
+    else if (irValue == 0xFF18E7) { // Taste 2
+      Serial.println("Aktion: Nur Bewegen");
       bewegeServosZufaellig();
-      //delay(500); // Kann meist entfernt werden, wenn die Sequenz eigene Delays hat
-      //servoAus();
+    }
+    else if (irValue == 0xFF7A85) { // Taste 3
+      Serial.println("Aktion: Sprechen & Bewegen gleichzeitig");
+      spieleZufallsTrack(); // Startet sofort (non-blocking)
+      bewegeServosZufaellig(); // Startet danach (blocking für die Dauer der Bewegung)
     }
 
-    unsigned long actionDuration = millis() - cycleStart;
-    unsigned long sleepTime = 0;
-
-    if (actionDuration < interval) {
-      sleepTime = interval - actionDuration;
-    }
-
-    if (sleepTime > 0) {
-      Serial.printf("Action duration: %lu ms, entering light sleep for %lu ms\n", actionDuration, sleepTime);
-      esp_sleep_enable_timer_wakeup(sleepTime * 1000ULL);  // microseconds
-      esp_light_sleep_start();
-      Serial.println("Woke up from light sleep.");
-      lastActionTime = millis();
-    } else {
-      Serial.printf("Action took %lu ms, skipping sleep this cycle.\n", actionDuration);
-    }
+    irrecv.resume(); // Bereit für das nächste Signal
   }
+  delay(50); // Entlastung für die CPU
 }
